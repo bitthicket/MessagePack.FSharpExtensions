@@ -1041,7 +1041,12 @@ namespace MessagePack.FSharp.Internal
                     }
                     else
                     {
-                        var hasKey = methodLookupDictionary[item.Name];
+                        // F# compiler prefixes named DU field parameters with '_' in the generated
+                        // static factory method (e.g., "Command of name: string" generates
+                        // "NewCommand(_name: string)"). Strip the leading underscore so the
+                        // case-insensitive lookup against the property name succeeds.
+                        var lookupName = item.Name.TrimStart('_');
+                        var hasKey = methodLookupDictionary[lookupName];
                         var len = hasKey.Count();
                         if (len != 0)
                         {
