@@ -27,7 +27,8 @@ namespace MessagePack.FSharp.Formatters
         {
             if (reader.TryReadNil())
             {
-                return default;
+                // A nil-encoded async round-trips as null (same semantics as FSharpOption None).
+                return default!;
             }
             IFormatterResolver resolver = options.Resolver;
             options.Security.DepthStep(ref reader);

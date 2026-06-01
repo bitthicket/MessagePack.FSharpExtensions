@@ -23,7 +23,8 @@ namespace MessagePack.FSharp.Formatters
         {
             if (reader.TryReadNil())
             {
-                return null;
+                // FSharpOption<T>.None is represented as null at the CLR level.
+                return null!;
             }
             IFormatterResolver resolver = options.Resolver;
             options.Security.DepthStep(ref reader);

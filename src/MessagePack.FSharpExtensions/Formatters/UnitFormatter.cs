@@ -17,7 +17,8 @@ namespace MessagePack.FSharp.Formatters
         public Unit Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
         {
             reader.ReadNil();
-            return null;
+            // null is the correct CLR representation of F# unit in generic type contexts.
+            return null!;
         }
     }
 }
