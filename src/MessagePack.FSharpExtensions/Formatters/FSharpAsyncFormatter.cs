@@ -3,12 +3,12 @@ using Microsoft.FSharp.Control;
 
 namespace MessagePack.FSharp.Formatters
 {
-    public sealed class FSharpAsyncFormatter<T> : IMessagePackFormatter<FSharpAsync<T>>
+    public sealed class FSharpAsyncFormatter<T> : IMessagePackFormatter<FSharpAsync<T>?>
     {
 
         public FSharpAsyncFormatter() { }
 
-        public void Serialize(ref MessagePackWriter writer, FSharpAsync<T> value, MessagePackSerializerOptions options)
+        public void Serialize(ref MessagePackWriter writer, FSharpAsync<T>? value, MessagePackSerializerOptions options)
         {
             if (value == null)
             {
@@ -23,12 +23,12 @@ namespace MessagePack.FSharp.Formatters
             }
         }
 
-        public FSharpAsync<T> Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        public FSharpAsync<T>? Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
         {
             if (reader.TryReadNil())
             {
                 // A nil-encoded async round-trips as null (same semantics as FSharpOption None).
-                return default!;
+                return default;
             }
             IFormatterResolver resolver = options.Resolver;
             options.Security.DepthStep(ref reader);

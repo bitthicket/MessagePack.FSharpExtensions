@@ -3,11 +3,11 @@ using Microsoft.FSharp.Core;
 
 namespace MessagePack.FSharp.Formatters
 {
-    public sealed class FSharpOptionFormatter<T> : IMessagePackFormatter<FSharpOption<T>>
+    public sealed class FSharpOptionFormatter<T> : IMessagePackFormatter<FSharpOption<T>?>
     {
-        public void Serialize(ref MessagePackWriter writer, FSharpOption<T> value, MessagePackSerializerOptions options)
+        public void Serialize(ref MessagePackWriter writer, FSharpOption<T>? value, MessagePackSerializerOptions options)
         {
-            if (FSharpOption<T>.get_IsNone(value))
+            if (value is null || FSharpOption<T>.get_IsNone(value))
             {
                 writer.WriteNil();
                 return;
@@ -19,12 +19,12 @@ namespace MessagePack.FSharp.Formatters
             }
         }
 
-        public FSharpOption<T> Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
+        public FSharpOption<T>? Deserialize(ref MessagePackReader reader, MessagePackSerializerOptions options)
         {
             if (reader.TryReadNil())
             {
                 // FSharpOption<T>.None is represented as null at the CLR level.
-                return null!;
+                return null;
             }
             IFormatterResolver resolver = options.Resolver;
             options.Security.DepthStep(ref reader);
