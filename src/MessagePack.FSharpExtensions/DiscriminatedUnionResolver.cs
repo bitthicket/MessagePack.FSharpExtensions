@@ -1,3 +1,11 @@
+// CS860x / CS8625: This file is IL-emit code that uses reflection APIs whose
+// nullable annotations post-date its original design.  The public-facing types
+// (UnionSerializationInfo, EmittableMember, DeserializeInfo, FormatterCache<T>)
+// are individually corrected above their declarations.  The remaining warnings
+// inside the IL-generation logic are suppressed here rather than littered with
+// null-forgiving operators across 1 000+ lines of known-correct code.
+#pragma warning disable CS8600, CS8601, CS8602, CS8603, CS8604, CS8625
+
 // Copyright (c) 2017 Yoshifumi Kawai and contributors
 
 // Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -29,6 +37,7 @@ using System.Threading;
 using MessagePack.Formatters;
 using MessagePack.Internal;
 using MessagePack.FSharp.Internal;
+using Microsoft.FSharp.Core;
 using Microsoft.FSharp.Reflection;
 
 namespace MessagePack.FSharp
@@ -53,18 +62,19 @@ namespace MessagePack.FSharp
             DynamicAssembly = new Lazy<DynamicAssembly>(() => new DynamicAssembly(ModuleName));
         }
 
-        public IMessagePackFormatter<T> GetFormatter<T>()
+        public IMessagePackFormatter<T>? GetFormatter<T>()
         {
             return FormatterCache<T>.Formatter;
         }
 
         private static class FormatterCache<T>
         {
-            public static readonly IMessagePackFormatter<T> Formatter;
+            // Null when T is not an F# discriminated union.
+            public static readonly IMessagePackFormatter<T>? Formatter;
 
             static FormatterCache()
             {
-                if (!FSharpType.IsUnion(typeof(T), null))
+                if (!FSharpType.IsUnion(typeof(T), FSharpOption<System.Reflection.BindingFlags>.None))
                 {
                     return;
                 }
@@ -85,12 +95,14 @@ namespace MessagePack.FSharp
         {
             var ti = type.GetTypeInfo();
             // order by key(important for use jump-table of switch)
-            var unionCases = FSharpType.GetUnionCases(type, null).OrderBy(x => x.Tag).ToArray();
+            var unionCases = FSharpType.GetUnionCases(type, FSharpOption<System.Reflection.BindingFlags>.None).OrderBy(x => x.Tag).ToArray();
 
             var formatterType = typeof(IMessagePackFormatter<>).MakeGenericType(type);
             using (MonoProtection.EnterRefEmitLock())
             {
-                TypeBuilder typeBuilder = DynamicAssembly.Value.DefineType("MessagePack.FSharp.Formatters." + SubtractFullNameRegex.Replace(type.FullName, string.Empty).Replace(".", "_") + "Formatter" + +Interlocked.Increment(ref nameSequence), TypeAttributes.Public | TypeAttributes.Sealed, null, new[] { formatterType });
+                // type.FullName is non-null for the closed generic types we build formatters for.
+                // The null parent argument signals "inherit from System.Object" (standard for emitted types).
+                TypeBuilder typeBuilder = DynamicAssembly.Value.DefineType("MessagePack.FSharp.Formatters." + SubtractFullNameRegex.Replace(type.FullName!, string.Empty).Replace(".", "_") + "Formatter" + +Interlocked.Increment(ref nameSequence), TypeAttributes.Public | TypeAttributes.Sealed, (Type?)null, new[] { formatterType });
     
                 var stringByteKeysFields = new FieldBuilder[unionCases.Length];
     
@@ -720,8 +732,8 @@ namespace MessagePack.FSharp
                 });
             }
 
-            // create result union case
-            LocalBuilder structLocal = EmitNewObject(il, type, info, infoList);
+            // create result union case (null for class unions — result left on IL stack)
+            LocalBuilder? structLocal = EmitNewObject(il, type, info, infoList);
 
             // IMessagePackSerializationCallbackReceiver.OnAfterDeserialize()
             if (type.GetTypeInfo().ImplementedInterfaces.Any(x => x == typeof(IMessagePackSerializationCallbackReceiver)))
@@ -736,7 +748,7 @@ namespace MessagePack.FSharp
                     }
                     else
                     {
-                        il.EmitLdloca(structLocal);
+                        il.EmitLdloca(structLocal!);  // non-null when IsStruct
                     }
 
                     il.Emit(OpCodes.Call, runtimeMethods[0]); // don't use EmitCall helper(must use 'Call')
@@ -745,7 +757,7 @@ namespace MessagePack.FSharp
                 {
                     if (info.IsStruct)
                     {
-                        il.EmitLdloc(structLocal);
+                        il.EmitLdloc(structLocal!);  // non-null when IsStruct
                         il.Emit(OpCodes.Box, type);
                     }
                     else
@@ -766,7 +778,7 @@ namespace MessagePack.FSharp
 
             if (info.IsStruct)
             {
-                il.Emit(OpCodes.Ldloc, structLocal);
+                il.Emit(OpCodes.Ldloc, structLocal!);  // non-null when IsStruct
             }
         }
 
@@ -825,14 +837,16 @@ namespace MessagePack.FSharp
             il.EmitStloc(info.LocalField);
         }
 
-        private static LocalBuilder EmitNewObject(ILGenerator il, Type type, UnionSerializationInfo info, DeserializeInfo[] members)
+        // Returns null for class unions (result left on the IL stack via Call); returns the
+        // local variable for struct unions.  Callers guard on info.IsClass/IsStruct before use.
+        private static LocalBuilder? EmitNewObject(ILGenerator il, Type type, UnionSerializationInfo info, DeserializeInfo[] members)
         {
             if (info.IsClass)
             {
                 foreach (UnionSerializationInfo.EmittableMember item in info.MethodParameters)
                 {
                     DeserializeInfo local = members.First(x => x.MemberInfo == item);
-                    il.EmitLdloc(local.LocalField);
+                    il.EmitLdloc(local.LocalField!);
                 }
 
                 il.Emit(OpCodes.Call, info.NewMethod);
@@ -880,18 +894,21 @@ namespace MessagePack.FSharp
         // EmitInfos...
         private static readonly Type refMessagePackReader = typeof(MessagePackReader).MakeByRefType();
 
-        private static readonly MethodInfo ReadOnlySpanFromByteArray = typeof(ReadOnlySpan<byte>).GetRuntimeMethod("op_Implicit", new[] { typeof(byte[]) });
-        private static readonly MethodInfo ReadStringSpan = typeof(CodeGenHelpers).GetRuntimeMethod(nameof(CodeGenHelpers.ReadStringSpan), new[] { typeof(MessagePackReader).MakeByRefType() });
-        private static readonly MethodInfo ArrayFromNullableReadOnlySequence = typeof(CodeGenHelpers).GetRuntimeMethod(nameof(CodeGenHelpers.GetArrayFromNullableSequence), new[] { typeof(ReadOnlySequence<byte>?).MakeByRefType() });
+        // These fields are initialised via reflection against known, stable MessagePack 3.x APIs.
+        // The null-forgiving operators (!) suppress CS8601/CS8602; failures here are caught
+        // at class-load time, not hidden silently.
+        private static readonly MethodInfo ReadOnlySpanFromByteArray = typeof(ReadOnlySpan<byte>).GetRuntimeMethod("op_Implicit", new[] { typeof(byte[]) })!;
+        private static readonly MethodInfo ReadStringSpan = typeof(CodeGenHelpers).GetRuntimeMethod(nameof(CodeGenHelpers.ReadStringSpan), new[] { typeof(MessagePackReader).MakeByRefType() })!;
+        private static readonly MethodInfo ArrayFromNullableReadOnlySequence = typeof(CodeGenHelpers).GetRuntimeMethod(nameof(CodeGenHelpers.GetArrayFromNullableSequence), new[] { typeof(ReadOnlySequence<byte>?).MakeByRefType() })!;
 
         private static readonly MethodInfo getFormatterWithVerify = typeof(FormatterResolverExtensions).GetRuntimeMethods().First(x => x.Name == nameof(FormatterResolverExtensions.GetFormatterWithVerify));
-        private static readonly MethodInfo getResolverFromOptions = typeof(MessagePackSerializerOptions).GetRuntimeProperty(nameof(MessagePackSerializerOptions.Resolver)).GetMethod;
-        private static readonly MethodInfo getSecurityFromOptions = typeof(MessagePackSerializerOptions).GetRuntimeProperty(nameof(MessagePackSerializerOptions.Security)).GetMethod;
-        private static readonly MethodInfo securityDepthStep = typeof(MessagePackSecurity).GetRuntimeMethod(nameof(MessagePackSecurity.DepthStep), new[] { typeof(MessagePackReader).MakeByRefType() });
-        private static readonly MethodInfo readerDepthGet = typeof(MessagePackReader).GetRuntimeProperty(nameof(MessagePackReader.Depth)).GetMethod;
-        private static readonly MethodInfo readerDepthSet = typeof(MessagePackReader).GetRuntimeProperty(nameof(MessagePackReader.Depth)).SetMethod;
-        private static readonly Func<Type, MethodInfo> getSerialize = t => typeof(IMessagePackFormatter<>).MakeGenericType(t).GetRuntimeMethod(nameof(IMessagePackFormatter<int>.Serialize), new[] { typeof(MessagePackWriter).MakeByRefType(), t, typeof(MessagePackSerializerOptions) });
-        private static readonly Func<Type, MethodInfo> getDeserialize = t => typeof(IMessagePackFormatter<>).MakeGenericType(t).GetRuntimeMethod(nameof(IMessagePackFormatter<int>.Deserialize), new[] { refMessagePackReader, typeof(MessagePackSerializerOptions) });
+        private static readonly MethodInfo getResolverFromOptions = typeof(MessagePackSerializerOptions).GetRuntimeProperty(nameof(MessagePackSerializerOptions.Resolver))!.GetMethod!;
+        private static readonly MethodInfo getSecurityFromOptions = typeof(MessagePackSerializerOptions).GetRuntimeProperty(nameof(MessagePackSerializerOptions.Security))!.GetMethod!;
+        private static readonly MethodInfo securityDepthStep = typeof(MessagePackSecurity).GetRuntimeMethod(nameof(MessagePackSecurity.DepthStep), new[] { typeof(MessagePackReader).MakeByRefType() })!;
+        private static readonly MethodInfo readerDepthGet = typeof(MessagePackReader).GetRuntimeProperty(nameof(MessagePackReader.Depth))!.GetMethod!;
+        private static readonly MethodInfo readerDepthSet = typeof(MessagePackReader).GetRuntimeProperty(nameof(MessagePackReader.Depth))!.SetMethod!;
+        private static readonly Func<Type, MethodInfo> getSerialize = t => typeof(IMessagePackFormatter<>).MakeGenericType(t).GetRuntimeMethod(nameof(IMessagePackFormatter<int>.Serialize), new[] { typeof(MessagePackWriter).MakeByRefType(), t, typeof(MessagePackSerializerOptions) })!;
+        private static readonly Func<Type, MethodInfo> getDeserialize = t => typeof(IMessagePackFormatter<>).MakeGenericType(t).GetRuntimeMethod(nameof(IMessagePackFormatter<int>.Deserialize), new[] { refMessagePackReader, typeof(MessagePackSerializerOptions) })!;
         //// static readonly ConstructorInfo dictionaryConstructor = typeof(ByteArrayStringHashTable).GetTypeInfo().DeclaredConstructors.First(x => { var p = x.GetParameters(); return p.Length == 1 && p[0].ParameterType == typeof(int); });
         //// static readonly MethodInfo dictionaryAdd = typeof(ByteArrayStringHashTable).GetRuntimeMethod("Add", new[] { typeof(string), typeof(int) });
         //// static readonly MethodInfo dictionaryTryGetValue = typeof(ByteArrayStringHashTable).GetRuntimeMethod("TryGetValue", new[] { typeof(ArraySegment<byte>), refInt });
@@ -906,33 +923,33 @@ namespace MessagePack.FSharp
 
         static readonly ConstructorInfo objectCtor = typeof(object).GetTypeInfo().DeclaredConstructors.First(x => x.GetParameters().Length == 0);
 
-        static readonly Func<Type, MethodInfo> getTag = type => type.GetTypeInfo().GetProperty("Tag").GetGetMethod();
+        static readonly Func<Type, MethodInfo> getTag = type => type.GetTypeInfo().GetProperty("Tag")!.GetGetMethod()!;
 
-        static readonly MethodInfo onBeforeSerialize = typeof(IMessagePackSerializationCallbackReceiver).GetRuntimeMethod("OnBeforeSerialize", Type.EmptyTypes);
-        static readonly MethodInfo onAfterDeserialize = typeof(IMessagePackSerializationCallbackReceiver).GetRuntimeMethod("OnAfterDeserialize", Type.EmptyTypes);
+        static readonly MethodInfo onBeforeSerialize = typeof(IMessagePackSerializationCallbackReceiver).GetRuntimeMethod("OnBeforeSerialize", Type.EmptyTypes)!;
+        static readonly MethodInfo onAfterDeserialize = typeof(IMessagePackSerializationCallbackReceiver).GetRuntimeMethod("OnAfterDeserialize", Type.EmptyTypes)!;
 
         internal static class MessagePackWriterTypeInfo
         {
             internal static readonly TypeInfo TypeInfo = typeof(MessagePackWriter).GetTypeInfo();
 
-            internal static readonly MethodInfo WriteMapHeader = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteMapHeader), new[] { typeof(int) });
-            internal static readonly MethodInfo WriteArrayHeader = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteArrayHeader), new[] { typeof(int) });
-            internal static readonly MethodInfo WriteBytes = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.Write), new[] { typeof(ReadOnlySpan<byte>) });
-            internal static readonly MethodInfo WriteNil = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteNil), Type.EmptyTypes);
-            internal static readonly MethodInfo WriteRaw = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteRaw), new[] { typeof(ReadOnlySpan<byte>) });
-            internal static readonly MethodInfo WriteInt32 = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.Write), new[] { typeof(int) });
+            internal static readonly MethodInfo WriteMapHeader = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteMapHeader), new[] { typeof(int) })!;
+            internal static readonly MethodInfo WriteArrayHeader = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteArrayHeader), new[] { typeof(int) })!;
+            internal static readonly MethodInfo WriteBytes = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.Write), new[] { typeof(ReadOnlySpan<byte>) })!;
+            internal static readonly MethodInfo WriteNil = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteNil), Type.EmptyTypes)!;
+            internal static readonly MethodInfo WriteRaw = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.WriteRaw), new[] { typeof(ReadOnlySpan<byte>) })!;
+            internal static readonly MethodInfo WriteInt32 = typeof(MessagePackWriter).GetRuntimeMethod(nameof(MessagePackWriter.Write), new[] { typeof(int) })!;
         }
 
         internal static class MessagePackReaderTypeInfo
         {
             internal static readonly TypeInfo TypeInfo = typeof(MessagePackReader).GetTypeInfo();
 
-            internal static readonly MethodInfo ReadArrayHeader = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadArrayHeader), Type.EmptyTypes);
-            internal static readonly MethodInfo ReadMapHeader = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadMapHeader), Type.EmptyTypes);
-            internal static readonly MethodInfo ReadBytes = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadBytes), Type.EmptyTypes);
-            internal static readonly MethodInfo TryReadNil = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.TryReadNil), Type.EmptyTypes);
-            internal static readonly MethodInfo Skip = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.Skip), Type.EmptyTypes);
-            internal static readonly MethodInfo ReadInt32 = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadInt32), Type.EmptyTypes);
+            internal static readonly MethodInfo ReadArrayHeader = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadArrayHeader), Type.EmptyTypes)!;
+            internal static readonly MethodInfo ReadMapHeader = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadMapHeader), Type.EmptyTypes)!;
+            internal static readonly MethodInfo ReadBytes = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadBytes), Type.EmptyTypes)!;
+            internal static readonly MethodInfo TryReadNil = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.TryReadNil), Type.EmptyTypes)!;
+            internal static readonly MethodInfo Skip = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.Skip), Type.EmptyTypes)!;
+            internal static readonly MethodInfo ReadInt32 = typeof(MessagePackReader).GetRuntimeMethod(nameof(MessagePackReader.ReadInt32), Type.EmptyTypes)!;
         }
 
         internal static class CodeGenHelpersTypeInfo
@@ -942,8 +959,9 @@ namespace MessagePack.FSharp
 
         class DeserializeInfo
         {
-            public UnionSerializationInfo.EmittableMember MemberInfo { get; set; }
-            public LocalBuilder LocalField { get; set; }
+            // Null when this entry represents the "goto default" case (no matched member).
+            public UnionSerializationInfo.EmittableMember? MemberInfo { get; set; }
+            public LocalBuilder? LocalField { get; set; }
             public Label SwitchLabel { get; set; }
         }
     }
@@ -957,9 +975,10 @@ namespace MessagePack.FSharp.Internal
         public bool IsStringKey { get { return !IsIntKey; } }
         public bool IsClass { get; set; }
         public bool IsStruct { get { return !IsClass; } }
-        public MethodInfo NewMethod { get; set; }
-        public EmittableMember[] MethodParameters { get; set; }
-        public EmittableMember[] Members { get; set; }
+        // Set via object initialiser immediately after construction.
+        public MethodInfo NewMethod { get; set; } = null!;
+        public EmittableMember[] MethodParameters { get; set; } = null!;
+        public EmittableMember[] Members { get; set; } = null!;
 
         UnionSerializationInfo() { }
 
@@ -1041,7 +1060,12 @@ namespace MessagePack.FSharp.Internal
                     }
                     else
                     {
-                        var hasKey = methodLookupDictionary[item.Name];
+                        // F# compiler prefixes named DU field parameters with '_' in the generated
+                        // static factory method (e.g., "Command of name: string" generates
+                        // "NewCommand(_name: string)"). Strip the leading underscore so the
+                        // case-insensitive lookup against the property name succeeds.
+                        var lookupName = item.Name.TrimStart('_');
+                        var hasKey = methodLookupDictionary[lookupName];
                         var len = hasKey.Count();
                         if (len != 0)
                         {
@@ -1086,9 +1110,10 @@ namespace MessagePack.FSharp.Internal
         public class EmittableMember
         {
             public int IntKey { get; set; }
-            public string StringKey { get; set; }
+            // Set via object initialiser immediately after construction.
+            public string StringKey { get; set; } = null!;
             public Type Type { get { return PropertyInfo.PropertyType; } }
-            public PropertyInfo PropertyInfo { get; set; }
+            public PropertyInfo PropertyInfo { get; set; } = null!;
             public bool IsValueType
             {
                 get

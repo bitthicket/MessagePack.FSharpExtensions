@@ -1,0 +1,10 @@
+<!-- Stops MSBuild from walking up to the parent repo's Directory.Build.props.
+     This submodule manages its own build settings. -->
+<Project>
+  <PropertyGroup>
+    <!-- Only set C# language version for C# projects -->
+    <LangVersion Condition="'$(Language)' == 'C#'">12.0</LangVersion>
+    <Nullable Condition="'$(Language)' == 'C#'">enable</Nullable>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

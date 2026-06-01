@@ -33,6 +33,39 @@ let ``string key`` () =
   let actual = convert input
   Assert.Equal(input, actual)
 
+// Multi-field named DU fields. The F# compiler prefixes generated factory method
+// parameters with '_' (e.g., NewMultiNamed(_first, _second)), which previously
+// caused the string-key lookup to fail. This exercises the underscore-stripping fix.
+type MultiNamedFieldUnion =
+  | Single of value: int
+  | Pair   of first: string * second: int
+  | Triple of a: int * b: string * c: float
+
+[<Fact>]
+let ``multi-field named DU fields round-trip`` () =
+
+  let s = Single(value = 42)
+  Assert.Equal(s, convertEq s)
+
+  let p = Pair(first = "hello", second = 99)
+  Assert.Equal(p, convertEq p)
+
+  let t = Triple(a = 1, b = "world", c = 3.14)
+  Assert.Equal(t, convertEq t)
+
+// Option-typed field inside a DU case.
+type UnionWithOption =
+  | WithOpt of key: string * detail: string option
+
+[<Fact>]
+let ``DU case with option field round-trips`` () =
+
+  let none = WithOpt(key = "k", detail = None)
+  Assert.Equal(none, convertEq none)
+
+  let some = WithOpt(key = "k", detail = Some "extra")
+  Assert.Equal(some, convertEq some)
+
 let mutable beforeCallback = false
 let mutable afterCallback = false
 

@@ -1,0 +1,7 @@
+<!-- Disables Central Package Management inherited from the parent repo.
+     This submodule manages its own package versions. -->
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>

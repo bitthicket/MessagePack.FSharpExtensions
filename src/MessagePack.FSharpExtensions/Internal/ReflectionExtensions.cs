@@ -56,14 +56,17 @@ namespace MessagePack.Internal
             return type.AsType().IsConstructedGenericType;
         }
 
+        // Properties on F# DU fields always have public accessors; suppress nullable
+        // warnings on the GetMethod/SetMethod accessors (which return MethodInfo?
+        // in net6+ annotations but are non-null for the types this library handles).
         public static MethodInfo GetGetMethod(this PropertyInfo propInfo)
         {
-            return propInfo.GetMethod;
+            return propInfo.GetMethod!;
         }
 
         public static MethodInfo GetSetMethod(this PropertyInfo propInfo)
         {
-            return propInfo.SetMethod;
+            return propInfo.SetMethod!;
         }
     }
 }
